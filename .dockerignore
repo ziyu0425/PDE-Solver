@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and plots (will be generated at runtime)
+data/*.pkl
+plots/*.html
+conversation_memory.json
+
+# Backups
+backups/
+*.tar.gz
+*.zip
+
+# Environment files (use .env.example)
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md.bak
+
+# Docker
+Dockerfile
+.dockerignore
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/config.toml.local
+

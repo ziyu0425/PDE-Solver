@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  pde-solver:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      # Persistent storage for data and plots
+      - ./data:/app/data
+      - ./plots:/app/plots
+      - ./conversation_memory.json:/app/conversation_memory.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+

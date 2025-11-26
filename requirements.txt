@@ -1,0 +1,34 @@
+# Core dependencies - Web Interface
+streamlit==1.51.0
+python-dotenv==1.2.1
+
+# LangChain dependencies - Multi-agent system
+langchain-openai==1.0.3
+langchain-core==1.0.5
+langchain-mcp-adapters==0.1.13
+
+# MCP (Model Context Protocol) server
+# Note: fastmcp is included in the mcp package
+mcp==1.21.2
+
+# Scientific computing
+numpy>=1.26.0
+scipy==1.15.3
+
+# Visualization
+plotly==6.5.0
+
+# FEniCS - IMPORTANT: FEniCS has complex system dependencies
+# For Docker, FEniCS installation is handled in the Dockerfile via apt-get and conda
+# If installing locally, use conda:
+# conda install -c conda-forge fenics-dolfin=2019.1.0 fenics-ffc=2019.1.0 fenics-fiat=2019.1.0 fenics-ufl=2019.1.0 fenics-dijitso=2019.1.0
+# 
+# The fenics package (2019.1.0) provides a meta-package that depends on the above components
+# Note: FEniCS 2019.1.0 is installed via conda-forge in the fem-gpt environment
+
+# Additional dependencies (automatically installed as dependencies of above packages)
+# - aiofiles (for async file operations)
+# - altair (dependency of streamlit)
+# - fastapi (dependency of MCP/server components)
+# - httpx, httpcore (HTTP client libraries)
+# - typing-extensions, pydantic (type checking and validation)
