@@ -200,7 +200,18 @@ class MultiAgentOrchestrator:
             print("   (Detected as follow-up - will preserve previous parameters)")
         try:
             pde_params = await self.parser_agent.parse(enhanced_description)
-            
+            #try:
+            #    print("[DEBUG] Parsed PDEParameters:")
+            #    print(f"   pde_type      = {pde_params.pde_type}")
+            #    print(f"   dim           = {pde_params.dim}")
+            #    print(f"   geometry_type = {pde_params.geometry_type}")
+            #    print(f"   coordinate_system = {getattr(pde_params, 'coordinate_system', None)}")
+            #    print(f"   domain_size   = {pde_params.domain_size}")
+            #    print(f"   bc_values     = {pde_params.bc_values}")
+            #    print(f"   geometry_params = {getattr(pde_params, 'geometry_params', None)}")
+            #    print(f"   diffusivity   = {pde_params.diffusivity}")
+            #except Exception as debug_e:
+            #    print(f"[DEBUG] Failed to print PDEParameters: {debug_e}")
             # Normalize domain_size immediately after parsing (fix malformed formats like {"domain_size": value})
             # Pass the original description for fallback extraction if parser missed dimensions
             if pde_params.domain_size:

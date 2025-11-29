@@ -22,6 +22,9 @@ class PDEParameters:
     
     # Domain geometry
     domain_size: Dict[str, float] = field(default_factory=dict)  # e.g., {"length": 2.0} for 1D, {"Lx": 1.0, "Ly": 1.0} for 2D, {"Lx": 1.0, "Ly": 0.2, "Lz": 0.2} for 3D
+    geometry_type: Optional[str] = None  # "box", "cylinder", "sphere", "cube", "column" (will be normalized)
+    geometry_params: Dict[str, float] = field(default_factory=dict)  # e.g., {"cylinder_radius": 0.5}, {"sphere_radius": 1.0}, {"r_inner": 0.1, "r_outer": 1.0}
+    coordinate_system: Optional[str] = None  # "cartesian", "cylindrical", "spherical" (inferred from geometry_type)
     
     # Spatial discretization
     nx: Optional[int] = None
@@ -35,6 +38,10 @@ class PDEParameters:
     poisson_ratio: Optional[float] = None  # nu for elasticity
     density: Optional[float] = None  # rho (kg/m³) for elasticity (for dynamic problems)
     material_params: Dict[str, float] = field(default_factory=dict)  # generic material parameters
+    
+    # Composite material parameters (for heat equation with high-conductivity core)
+    core_radius: Optional[float] = None  # Radius of high-conductivity core (for cylindrical geometries, typically equals r1 for hollow cylinders)
+    core_diffusivity: Optional[float] = None  # Diffusivity of core material (should be higher than base diffusivity)
     
     # Boundary conditions
     bc_type: Literal["dirichlet", "neumann", "robin", "mixed"] = "dirichlet"

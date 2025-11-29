@@ -111,22 +111,72 @@ class DispatcherAgent:
         tools = await self.mcp_client.get_tools()
         tool_map = {tool.name: tool for tool in tools}
         
-        # Determine which solver to use based on PDE type
+        # Determine which solver to use based on PDE type and geometry
         if pde_params.pde_type == "heat":
-            solver_name = f"solve_heat_{pde_params.dim}D"
-            if solver_name not in tool_map:
-                raise ValueError(f"Solver tool {solver_name} not available")
-            solver_tool = tool_map[solver_name]
+            # Check geometry type to determine which solver to use
+            geometry_type = (pde_params.geometry_type or "").lower()
             
-            # Build solver arguments based on dimension
+            # Normalize geometry type aliases
+            if geometry_type in ["cube", "cubic", "box", "rectangular"]:
+                geometry_type = "box"
+            elif geometry_type in ["cylinder", "cylindrical", "column", "tube", "pipe", "tunnel"]:
+                geometry_type = "cylinder"
+            elif geometry_type in ["sphere", "spherical", "ball"]:
+                geometry_type = "sphere"
+            elif not geometry_type or geometry_type == "":
+                # If geometry_type is empty, try to infer from domain_size or coordinate_system
+                if pde_params.coordinate_system:
+                    coord_sys = str(pde_params.coordinate_system).lower()
+                    if coord_sys in ["cylindrical"]:
+                        geometry_type = "cylinder"
+                    elif coord_sys in ["spherical"]:
+                        geometry_type = "sphere"
+                    else:
+                        geometry_type = "box"  # Default for cartesian
+                else:
+                    # Check domain_size for cylindrical/spherical notation
+                    domain = pde_params.domain_size or {}
+                    has_r1 = "r1" in domain or "r2" in domain
+                    has_h = "h" in domain
+                    if has_r1 and has_h:
+                        geometry_type = "cylinder"
+                    elif has_r1 and not has_h:
+                        geometry_type = "sphere"
+                    else:
+                        geometry_type = "box"  # Default fallback
+            
+            # Route to appropriate solver based on dimension and geometry
             if pde_params.dim == 1:
-                solver_args = self._build_1d_args(pde_params)
+                if geometry_type == "cylinder":
+                    solver_name = "solve_heat_1D_cylindrical"
+                elif geometry_type == "sphere":
+                    solver_name = "solve_heat_1D_spherical"
+                else:
+                    solver_name = "solve_heat_1D"  # Default Cartesian
+                solver_args = self._build_1d_args(pde_params, geometry_type)
             elif pde_params.dim == 2:
-                solver_args = self._build_2d_args(pde_params)
+                if geometry_type == "cylinder":
+                    solver_name = "solve_heat_2D_cylindrical"
+                elif geometry_type == "sphere":
+                    solver_name = "solve_heat_2D_spherical"
+                else:
+                    solver_name = "solve_heat_2D"  # Default Cartesian
+                solver_args = self._build_2d_args(pde_params, geometry_type)
             elif pde_params.dim == 3:
-                solver_args = self._build_3d_args(pde_params)
+                if geometry_type == "sphere":
+                    solver_name = "solve_heat_3D_spherical"
+                    solver_args = self._build_3d_spherical_args(pde_params)
+                else:
+                    # For 3D, use solve_heat_3D which supports both box and cylinder via geometry_type parameter
+                    solver_name = "solve_heat_3D"
+                    solver_args = self._build_3d_args(pde_params, geometry_type)
             else:
                 raise ValueError(f"Unsupported dimension: {pde_params.dim}")
+            
+            # Check if solver tool exists
+            if solver_name not in tool_map:
+                raise ValueError(f"Solver tool {solver_name} not available. Available tools: {list(tool_map.keys())}")
+            solver_tool = tool_map[solver_name]
                 
         elif pde_params.pde_type == "elasticity":
             solver_name = f"solve_elasticity_{pde_params.dim}D_static"
@@ -145,6 +195,15 @@ class DispatcherAgent:
                 raise ValueError(f"Unsupported dimension: {pde_params.dim}")
         else:
             raise ValueError(f"Currently only 'heat' and 'elasticity' PDE types are supported, got: {pde_params.pde_type}")
+        
+        # ===== DEBUG: solver 名字 + 参数 =====
+        try:
+            import json
+            print("🚀 [DEBUG] Calling solver:", solver_name)
+            print(json.dumps(solver_args, indent=2, default=str))
+        except Exception as debug_e:
+            print(f"[DEBUG] Failed to print solver args: {debug_e}")
+        # ===== DEBUG END =====
         
         # Call solver
         try:
@@ -264,8 +323,18 @@ class DispatcherAgent:
                 "solver_args": solver_args,
             }
     
-    def _build_1d_args(self, params: PDEParameters) -> Dict[str, Any]:
-        """Build arguments for 1D heat solver."""
+    def _build_1d_args(self, params: PDEParameters, geometry_type: str = "box") -> Dict[str, Any]:
+        """Build arguments for 1D heat solver, supporting Cartesian, cylindrical, and spherical."""
+        # Route to geometry-specific solvers
+        if geometry_type == "cylinder":
+            return self._build_1d_cylindrical_args(params)
+        elif geometry_type == "sphere":
+            return self._build_1d_spherical_args(params)
+        else:
+            return self._build_1d_cartesian_args(params)
+    
+    def _build_1d_cartesian_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 1D Cartesian heat solver."""
         # Extract length from domain_size (handle both "length" and "L" keys, case-insensitive)
         domain = params.domain_size or {}
         # Handle nested domain_size key (parser might return {'domain_size': value})
@@ -376,8 +445,18 @@ class DispatcherAgent:
             "initial_wavenumber": initial_wavenumber,
         }
     
-    def _build_2d_args(self, params: PDEParameters) -> Dict[str, Any]:
-        """Build arguments for 2D heat solver."""
+    def _build_2d_args(self, params: PDEParameters, geometry_type: str = "box") -> Dict[str, Any]:
+        """Build arguments for 2D heat solver, supporting Cartesian, cylindrical, and spherical."""
+        # Route to geometry-specific solvers
+        if geometry_type == "cylinder":
+            return self._build_2d_cylindrical_args(params)
+        elif geometry_type == "sphere":
+            return self._build_2d_spherical_args(params)
+        else:
+            return self._build_2d_cartesian_args(params)
+    
+    def _build_2d_cartesian_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 2D Cartesian heat solver."""
         domain = params.domain_size or {}
         # Handle nested domain_size key (parser might return {'domain_size': value})
         if "domain_size" in domain and isinstance(domain["domain_size"], (int, float)):
@@ -455,9 +534,34 @@ class DispatcherAgent:
             "initial_wavenumber": initial_wavenumber,
         }
     
-    def _build_3d_args(self, params: PDEParameters) -> Dict[str, Any]:
-        """Build arguments for 3D heat solver."""
+    def _build_3d_args(self, params: PDEParameters, geometry_type: str = "box") -> Dict[str, Any]:
+        """Build arguments for 3D heat solver, supporting box, cylinder, and sphere geometries."""
         domain = params.domain_size or {}
+        
+        # CRITICAL: Prioritize geometry_type parameter, but also check params.geometry_type
+        geometry_lower = (geometry_type or "").lower()
+        if not geometry_lower or geometry_lower == "":
+            # If parameter is empty, check params
+            geometry_lower = (params.geometry_type or "").lower()
+            # Normalize
+            if geometry_lower in ["cylinder", "cylindrical", "column", "tube", "pipe", "tunnel"]:
+                geometry_lower = "cylinder"
+            elif geometry_lower in ["sphere", "spherical", "ball"]:
+                geometry_lower = "sphere"
+            else:
+                geometry_lower = "box"
+        
+        # Debug output
+        print(f"[DEBUG _build_3d_args] geometry_type param={geometry_type}, params.geometry_type={params.geometry_type}, geometry_lower={geometry_lower}")
+        
+        # Check if domain uses standard cylindrical/spherical notation
+        has_r1 = "r1" in domain
+        has_r2 = "r2" in domain
+        has_h = "h" in domain
+        
+        has_cylindrical_notation = (has_r1 or has_r2) and has_h
+        has_spherical_notation = (has_r1 or has_r2) and not has_h
+        
         # Handle nested domain_size key (parser might return {'domain_size': value})
         if "domain_size" in domain and isinstance(domain["domain_size"], (int, float)):
             # If domain_size is a single value, use it for Lx, Ly, Lz
@@ -465,7 +569,46 @@ class DispatcherAgent:
             Lx = size
             Ly = size
             Lz = size
+        elif geometry_lower == "cylinder":
+            # Cylindrical geometry - extract from domain_size if available, otherwise use defaults
+            if has_cylindrical_notation:
+                # Standard cylindrical notation: {r1, r2, h}
+                r1 = domain.get("r1", 0.0)  # inner radius, default 0.0 (solid)
+                r2 = domain.get("r2")  # outer radius (required)
+                h = domain.get("h")  # height (required)
+                if r2 is None:
+                    raise ValueError("For cylindrical geometry, domain_size must contain 'r2' (outer radius)")
+                if h is None:
+                    raise ValueError("For cylindrical geometry, domain_size must contain 'h' (height)")
+                # Map to solver parameters: Lx = height, cylinder_radius = r2
+                Lx = float(h)
+                Ly = float(r2 * 2)  # For compatibility, but not used for cylinder
+                Lz = float(r2 * 2)  # For compatibility, but not used for cylinder
+            else:
+                # Use defaults or try to infer from geometry_params
+                # Default cylindrical dimensions
+                Lx = domain.get("Lx") or 2.0  # length
+                # Try to get radius from geometry_params or use default
+                geom_params = params.geometry_params or {}
+                r2 = (geom_params.get("cylinder_radius") or 
+                      geom_params.get("r2") or 
+                      geom_params.get("r_outer") or
+                      0.5)  # Default radius
+                Ly = float(r2 * 2)
+                Lz = float(r2 * 2)
+        elif geometry_lower == "sphere" and has_spherical_notation:
+            # Standard spherical notation: {r1, r2}
+            r1 = domain.get("r1", 0.0)  # inner radius, default 0.0 (solid)
+            r2 = domain.get("r2")  # outer radius (required)
+            if r2 is None:
+                raise ValueError("For spherical geometry, domain_size must contain 'r2' (outer radius)")
+            # For spheres, these will be passed to the spherical solver
+            # For now, use placeholders for Lx, Ly, Lz (they won't be used)
+            Lx = float(r2 * 2) if r2 else 1.0
+            Ly = float(r2 * 2) if r2 else 1.0
+            Lz = float(r2 * 2) if r2 else 1.0
         else:
+            # Standard Cartesian/box notation: {Lx, Ly, Lz}
             Lx = (domain.get("Lx") or domain.get("lx") or domain.get("width") or 
                   domain.get("Width") or domain.get("W") or 1.0)
             Ly = (domain.get("Ly") or domain.get("ly") or domain.get("height") or 
@@ -519,7 +662,8 @@ class DispatcherAgent:
         else:  # cosine or sine
             T_initial = params.initial_value if params.initial_value is not None else 0.0
         
-        return {
+        # Build base arguments
+        solver_args = {
             "Lx": Lx,
             "Ly": Ly,
             "Lz": Lz,
@@ -538,6 +682,298 @@ class DispatcherAgent:
             "initial_type": initial_type,
             "initial_amplitude": initial_amplitude,
             "initial_wavenumber": initial_wavenumber,
+        }
+        
+        # Add geometry-specific parameters
+        # CRITICAL: Use geometry_lower determined earlier (from parameter or params.geometry_type)
+        has_cylindrical_notation = ("r1" in domain or "r2" in domain) and "h" in domain
+        has_spherical_notation = ("r1" in domain or "r2" in domain) and "h" not in domain
+        
+        if geometry_lower == "cylinder":
+            solver_args["geometry_type"] = "cylinder"
+            # Extract cylinder parameters from domain_size (standard notation: r1, r2, h)
+            r1 = None  # Initialize for use in composite material section
+            r2 = None  # Initialize for use in composite material section
+            if has_cylindrical_notation:
+                r1 = domain.get("r1", 0.0)  # inner radius
+                r2 = domain.get("r2")  # outer radius
+                h = domain.get("h")  # height
+                if r2 is None:
+                    raise ValueError("For cylindrical geometry, domain_size must contain 'r2' (outer radius)")
+                if h is None:
+                    raise ValueError("For cylindrical geometry, domain_size must contain 'h' (height)")
+                # Update Lx to use height, set cylinder_radius to r2
+                solver_args["Lx"] = float(h)
+                solver_args["cylinder_radius"] = float(r2)
+                # Store r1 for potential use in composite materials
+            else:
+                # Fallback: try to extract from geometry_params (old format) or use defaults
+                geom_params = params.geometry_params or {}
+                cylinder_radius = (geom_params.get("cylinder_radius") or 
+                                 geom_params.get("r_outer") or 
+                                 geom_params.get("r2") or
+                                 geom_params.get("radius") or 
+                                 0.5)  # Default radius
+                solver_args["cylinder_radius"] = cylinder_radius
+                r2 = cylinder_radius
+                # Use Lx as provided (should be length)
+            
+            # Extract directional boundary conditions if specified
+            bc_values = params.bc_values or {}
+            if "t_left" in bc_values or "T_left" in bc_values:
+                solver_args["T_left"] = bc_values.get("t_left") or bc_values.get("T_left")
+            if "t_right" in bc_values or "T_right" in bc_values:
+                solver_args["T_right"] = bc_values.get("t_right") or bc_values.get("T_right")
+            if "t_side" in bc_values or "T_side" in bc_values:
+                solver_args["T_side"] = bc_values.get("t_side") or bc_values.get("T_side")
+            
+            # Extract composite material parameters (core with high diffusivity)
+            # CRITICAL: core_radius should equal r1 for hollow cylinders
+            if params.core_diffusivity is not None:
+                # If core_diffusivity is specified, we need core_radius
+                if params.core_radius is not None:
+                    # Use explicitly provided core_radius from parser
+                    solver_args["core_radius"] = float(params.core_radius)
+                elif has_cylindrical_notation and r1 is not None:
+                    # For cylindrical geometries, infer core_radius from domain
+                    if r1 > 0.0:
+                        # Hollow cylinder: core_radius MUST equal r1 (core fills inner region from 0 to r1)
+                        solver_args["core_radius"] = float(r1)
+                        print(f"[DEBUG] Hollow cylinder with core: setting core_radius=r1={r1:.3f}")
+                    else:
+                        # Solid cylinder (r1=0.0): use a fraction of outer radius as default
+                        if r2 is not None:
+                            solver_args["core_radius"] = float(r2) * 0.3  # Default: 30% of outer radius
+                            print(f"[DEBUG] Solid cylinder with core: using default core_radius={solver_args['core_radius']:.3f} (30% of r2={r2:.3f})")
+                        else:
+                            solver_args["core_radius"] = 0.1
+                            print(f"[DEBUG] Using fallback core_radius=0.1")
+                else:
+                    # Fallback: use a small default core radius
+                    solver_args["core_radius"] = 0.1
+                    print(f"[DEBUG] Using fallback core_radius=0.1")
+                
+                # Set core_diffusivity
+                solver_args["core_diffusivity"] = float(params.core_diffusivity)
+                print(f"[DEBUG] Composite material detected: core_radius={solver_args['core_radius']:.3f}, core_diffusivity={solver_args['core_diffusivity']:.3f}")
+        else:
+            # Default to box if not cylinder
+            solver_args["geometry_type"] = "box"
+        # ===== DEBUG: 最终 3D solver_args =====
+        try:
+            import json
+            print("🧪 [DEBUG] Final 3D solver_args:")
+            print(json.dumps(solver_args, indent=2, default=str))
+        except Exception as debug_e:
+            print(f"[DEBUG] Could not JSON-dump solver_args: {debug_e}")
+            print(f"       Raw solver_args = {solver_args}")
+        # ===== DEBUG END =====
+        
+
+        return solver_args
+    
+    def _build_1d_cylindrical_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 1D cylindrical heat solver (radial)."""
+        geom_params = params.geometry_params or {}
+        r_inner = geom_params.get("r_inner") or 0.0
+        r_outer = geom_params.get("r_outer") or geom_params.get("cylinder_radius") or geom_params.get("radius") or 1.0
+        nr = params.nx or 50
+        
+        bc_values = params.bc_values or {}
+        T_inner = bc_values.get("t_inner") or bc_values.get("T_inner") or bc_values.get("t_boundary") or bc_values.get("T_boundary") or 100.0
+        T_outer = bc_values.get("t_outer") or bc_values.get("T_outer") or bc_values.get("t_boundary") or bc_values.get("T_boundary") or 20.0
+        
+        diffusivity = params.diffusivity or 1.0
+        dt = params.dt or 0.01
+        num_steps = params.num_steps or 50
+        steady = params.steady if params.steady is not None else False
+        source_type = params.source_type if params.source_type else "none"
+        source_value = params.source_value if params.source_value is not None else 0.0
+        initial_type = params.initial_type if params.initial_type else "constant"
+        initial_amplitude = params.initial_amplitude if params.initial_amplitude is not None else 1.0
+        T_initial = params.initial_value if params.initial_value is not None else 20.0
+        
+        return {
+            "r_inner": r_inner,
+            "r_outer": r_outer,
+            "nr": nr,
+            "diffusivity": diffusivity,
+            "T_inner": T_inner,
+            "T_outer": T_outer,
+            "T_initial": T_initial,
+            "dt": dt,
+            "num_steps": num_steps,
+            "data_dir": "data",
+            "steady": steady,
+            "source_type": source_type,
+            "source_value": source_value,
+            "initial_type": initial_type,
+            "initial_amplitude": initial_amplitude,
+        }
+    
+    def _build_1d_spherical_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 1D spherical heat solver (radial)."""
+        geom_params = params.geometry_params or {}
+        r_inner = geom_params.get("r_inner") or 0.0
+        r_outer = geom_params.get("r_outer") or geom_params.get("sphere_radius") or geom_params.get("radius") or 1.0
+        nr = params.nx or 50
+        
+        bc_values = params.bc_values or {}
+        T_inner = bc_values.get("t_inner") or bc_values.get("T_inner") or bc_values.get("t_boundary") or bc_values.get("T_boundary") or 100.0
+        T_outer = bc_values.get("t_outer") or bc_values.get("T_outer") or bc_values.get("t_boundary") or bc_values.get("T_boundary") or 20.0
+        
+        diffusivity = params.diffusivity or 1.0
+        dt = params.dt or 0.01
+        num_steps = params.num_steps or 50
+        steady = params.steady if params.steady is not None else False
+        source_type = params.source_type if params.source_type else "none"
+        source_value = params.source_value if params.source_value is not None else 0.0
+        initial_type = params.initial_type if params.initial_type else "constant"
+        initial_amplitude = params.initial_amplitude if params.initial_amplitude is not None else 1.0
+        T_initial = params.initial_value if params.initial_value is not None else 20.0
+        
+        return {
+            "r_inner": r_inner,
+            "r_outer": r_outer,
+            "nr": nr,
+            "diffusivity": diffusivity,
+            "T_inner": T_inner,
+            "T_outer": T_outer,
+            "T_initial": T_initial,
+            "dt": dt,
+            "num_steps": num_steps,
+            "data_dir": "data",
+            "steady": steady,
+            "source_type": source_type,
+            "source_value": source_value,
+            "initial_type": initial_type,
+            "initial_amplitude": initial_amplitude,
+        }
+    
+    def _build_2d_cylindrical_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 2D cylindrical heat solver (axisymmetric r-z)."""
+        domain = params.domain_size or {}
+        geom_params = params.geometry_params or {}
+        
+        r_inner = geom_params.get("r_inner") or 0.0
+        r_outer = geom_params.get("r_outer") or geom_params.get("cylinder_radius") or geom_params.get("radius") or 1.0
+        z_length = domain.get("Lx") or domain.get("length") or domain.get("L") or 2.0
+        
+        nr = params.nx or 30
+        nz = params.ny or 30
+        
+        bc_values = params.bc_values or {}
+        T_boundary = bc_values.get("t_boundary") or bc_values.get("T_boundary") or 20.0
+        
+        diffusivity = params.diffusivity or 1.0
+        dt = params.dt or 0.01
+        num_steps = params.num_steps or 50
+        steady = params.steady if params.steady is not None else False
+        source_type = params.source_type if params.source_type else "none"
+        source_value = params.source_value if params.source_value is not None else 0.0
+        initial_type = params.initial_type if params.initial_type else "constant"
+        initial_amplitude = params.initial_amplitude if params.initial_amplitude is not None else 1.0
+        T_initial = params.initial_value if params.initial_value is not None else 20.0
+        
+        return {
+            "r_inner": r_inner,
+            "r_outer": r_outer,
+            "z_length": z_length,
+            "nr": nr,
+            "nz": nz,
+            "diffusivity": diffusivity,
+            "T_boundary": T_boundary,
+            "T_initial": T_initial,
+            "dt": dt,
+            "num_steps": num_steps,
+            "data_dir": "data",
+            "steady": steady,
+            "source_type": source_type,
+            "source_value": source_value,
+            "initial_type": initial_type,
+            "initial_amplitude": initial_amplitude,
+        }
+    
+    def _build_2d_spherical_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 2D spherical heat solver (axisymmetric r-θ)."""
+        geom_params = params.geometry_params or {}
+        
+        r_inner = geom_params.get("r_inner") or 0.0
+        r_outer = geom_params.get("r_outer") or geom_params.get("sphere_radius") or geom_params.get("radius") or 1.0
+        nr = params.nx or 30
+        ntheta = params.ny or 30
+        
+        bc_values = params.bc_values or {}
+        T_boundary = bc_values.get("t_boundary") or bc_values.get("T_boundary") or 20.0
+        
+        diffusivity = params.diffusivity or 1.0
+        dt = params.dt or 0.01
+        num_steps = params.num_steps or 50
+        steady = params.steady if params.steady is not None else False
+        source_type = params.source_type if params.source_type else "none"
+        source_value = params.source_value if params.source_value is not None else 0.0
+        initial_type = params.initial_type if params.initial_type else "constant"
+        initial_amplitude = params.initial_amplitude if params.initial_amplitude is not None else 1.0
+        T_initial = params.initial_value if params.initial_value is not None else 20.0
+        
+        return {
+            "r_inner": r_inner,
+            "r_outer": r_outer,
+            "nr": nr,
+            "ntheta": ntheta,
+            "diffusivity": diffusivity,
+            "T_boundary": T_boundary,
+            "T_initial": T_initial,
+            "dt": dt,
+            "num_steps": num_steps,
+            "data_dir": "data",
+            "steady": steady,
+            "source_type": source_type,
+            "source_value": source_value,
+            "initial_type": initial_type,
+            "initial_amplitude": initial_amplitude,
+        }
+    
+    def _build_3d_spherical_args(self, params: PDEParameters) -> Dict[str, Any]:
+        """Build arguments for 3D spherical heat solver (full r-θ-φ)."""
+        geom_params = params.geometry_params or {}
+        
+        r_inner = geom_params.get("r_inner") or 0.0
+        r_outer = geom_params.get("r_outer") or geom_params.get("sphere_radius") or geom_params.get("radius") or 1.0
+        nr = params.nx or 20
+        ntheta = params.ny or 20
+        nphi = params.nz or 20
+        
+        bc_values = params.bc_values or {}
+        T_boundary = bc_values.get("t_boundary") or bc_values.get("T_boundary") or 20.0
+        
+        diffusivity = params.diffusivity or 1.0
+        dt = params.dt or 0.01
+        num_steps = params.num_steps or 50
+        steady = params.steady if params.steady is not None else False
+        source_type = params.source_type if params.source_type else "none"
+        source_value = params.source_value if params.source_value is not None else 0.0
+        initial_type = params.initial_type if params.initial_type else "constant"
+        initial_amplitude = params.initial_amplitude if params.initial_amplitude is not None else 1.0
+        T_initial = params.initial_value if params.initial_value is not None else 20.0
+        
+        return {
+            "r_inner": r_inner,
+            "r_outer": r_outer,
+            "nr": nr,
+            "ntheta": ntheta,
+            "nphi": nphi,
+            "diffusivity": diffusivity,
+            "T_boundary": T_boundary,
+            "T_initial": T_initial,
+            "dt": dt,
+            "num_steps": num_steps,
+            "data_dir": "data",
+            "steady": steady,
+            "source_type": source_type,
+            "source_value": source_value,
+            "initial_type": initial_type,
+            "initial_amplitude": initial_amplitude,
         }
     
     def _build_elasticity_1d_args(self, params: PDEParameters) -> Dict[str, Any]:

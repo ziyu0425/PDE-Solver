@@ -220,17 +220,89 @@ STRUCTURED INFORMATION TO EXTRACT
 
 2. **Dimension**: Determine the spatial dimension (1, 2, or 3)
 
-3. **Domain Geometry**: Extract domain size:
+3. **Geometry Type Detection** (CRITICAL - Detect from natural language):
+   - geometry_type: Detect from keywords in the description:
+     * "cube" or "cubic" → geometry_type="box" (3D Cartesian)
+     * "box" or "rectangular" → geometry_type="box" (Cartesian)
+     * "cylinder", "cylindrical", "column", "tube", "pipe", "circular tunnel", "circular rod" → geometry_type="cylinder"
+     * "sphere", "spherical", "ball" → geometry_type="sphere"
+     * If no geometry mentioned, default to "box" for Cartesian coordinates
+   - coordinate_system: MUST be set based on geometry_type (ALWAYS include in output):
+     * geometry_type="box" / "cube" / "rectangular" → coordinate_system="cartesian"
+     * geometry_type="cylinder" / "cylindrical" / "column" / "tube" / "pipe" / "tunnel" → coordinate_system="cylindrical"
+     * geometry_type="sphere" / "spherical" / "ball" → coordinate_system="spherical"
+     * If geometry_type is not specified, default to coordinate_system="cartesian"
+     * CRITICAL: Always explicitly set coordinate_system in your JSON output based on geometry_type
+   - geometry_params: Extract additional shape parameters if needed (usually empty for simple shapes):
+     * For complex geometries like annulus, may contain additional parameters
+     * Most geometric parameters should be in domain_size (see Domain Geometry section below)
+   - CRITICAL: If user mentions "circular", "cylindrical", "column", "tube", etc., set geometry_type="cylinder"
+   - CRITICAL: If user mentions "sphere", "spherical", "ball", set geometry_type="sphere"
+
+4. **Domain Geometry**: Extract domain size:
    - 1D: {"length": L} or {"L": L}
    - 2D: {"Lx": Lx, "Ly": Ly} or {"width": W, "height": H}
-   - 3D: {"Lx": Lx, "Ly": Ly, "Lz": Lz} or {"width": W, "height": H, "depth": D}
-   - CRITICAL FOR 3D: When multiple dimensions are mentioned (e.g., "1m*0.2m*0.2"), extract ALL THREE as {"Lx": first, "Ly": second, "Lz": third}
+   - 3D Cartesian (box/cube): {"Lx": Lx, "Ly": Ly, "Lz": Lz} or {"width": W, "height": H, "depth": D}
+   - CRITICAL FOR 3D CARTESIAN: When multiple dimensions are mentioned (e.g., "1m*0.2m*0.2"), extract ALL THREE as {"Lx": first, "Ly": second, "Lz": third}
+   - **CRITICAL FOR CYLINDRICAL 3D**: 
+     * Use standard cylindrical coordinates: {"r1": inner_radius, "r2": outer_radius, "h": height}
+     * For solid cylinder: {"r1": 0.0, "r2": radius, "h": height}
+     * For hollow cylinder (annulus): {"r1": inner_radius, "r2": outer_radius, "h": height}
+     * Example: "circular tunnel with radius 0.5m and length 2m" → domain_size={"r1": 0.0, "r2": 0.5, "h": 2.0}
+     * Example: "hollow cylinder with inner radius 0.2m, outer radius 0.5m, height 2m" → domain_size={"r1": 0.2, "r2": 0.5, "h": 2.0}
+     * If only one radius mentioned, assume solid: r1=0.0, r2=mentioned_radius
+     * CRITICAL: MUST extract radius and height for cylindrical geometries!
+     * DEFAULT VALUES (if not mentioned): r1=0.0 (solid), r2=0.5m (outer radius), h=2.0m (height)
+     * If defaults are used, add a note: "Used default radius 0.5m and height 2.0m for cylindrical geometry"
+   - **CRITICAL FOR SPHERICAL 3D**: 
+     * Use standard spherical coordinates: {"r1": inner_radius, "r2": outer_radius}
+     * For solid sphere: {"r1": 0.0, "r2": radius}
+     * For spherical shell: {"r1": inner_radius, "r2": outer_radius}
+     * Example: "sphere with radius 1m" → domain_size={"r1": 0.0, "r2": 1.0}
+     * Example: "spherical shell with inner radius 0.5m, outer radius 1m" → domain_size={"r1": 0.5, "r2": 1.0}
+     * If only one radius mentioned, assume solid: r1=0.0, r2=mentioned_radius
+     * CRITICAL: MUST extract radius(es) for spherical geometries!
+     * DEFAULT VALUES (if not mentioned): r1=0.0 (solid), r2=1.0m (outer radius)
+     * If defaults are used, add a note: "Used default radius 1.0m for spherical geometry"
 
 4. **Spatial Discretization**: Extract or infer grid resolution:
    - nx, ny, nz (number of grid points in each direction)
 
 5. **Material/Physical Parameters**:
    - For heat: diffusivity (thermal diffusivity κ)
+   - **Composite Materials (for heat equation with cylindrical/spherical geometries) - CRITICAL**:
+     * **MANDATORY DETECTION**: If user mentions ANY of these phrases, you MUST extract composite material parameters:
+       - "heat conductor", "conductor", "conductive core", "composite material", "core"
+       - "with a heat conductor", "heat conductor in the middle", "conductor in the center", "core with"
+       - "insulator", "low conductivity", "low diffusivity" (for low diffusivity cores)
+       - ANY mention of different material properties in core/center → MUST set composite material parameters
+     * **MANDATORY EXTRACTION** (BOTH must be set when composite material is detected):
+       - core_diffusivity: The diffusivity/conductivity of the core material (can be HIGHER or LOWER than base diffusivity)
+         * Extract from context:
+           - "high conductivity", "high diffusivity", "conductor" → HIGH diffusivity (default: 100.0 if not specified)
+           - "low conductivity", "low diffusivity", "insulator" → LOW diffusivity (default: 0.01 or 0.1 if not specified)
+           - If specific value mentioned (e.g., "conductivity of 100", "diffusivity of 0.5"), extract it
+           - If material type mentioned (e.g., "copper", "aluminum" → high; "wood", "plastic" → low), infer diffusivity
+         * **Defaults based on context**:
+           - High conductivity mentioned: core_diffusivity = 100.0 (high)
+           - Low conductivity/insulator mentioned: core_diffusivity = 0.01 (low)
+           - Neutral mention ("conductor", "core"): core_diffusivity = 10.0 (moderate, higher than typical base 1.0)
+         * If NOT explicitly mentioned, infer from keywords: "high" → 100.0, "low" → 0.01, neutral → 10.0
+       - core_radius: The radius of the core region
+         * For hollow cylinders with a core: core_radius should equal the inner radius (r1)
+         * Example: "hollow cylinder with inner radius 0.1m and outer radius 0.5m, with a high conductivity core" → 
+           core_radius=0.1 (same as r1), and extract core_diffusivity
+         * If core radius not explicitly mentioned but core exists, infer from geometry:
+           - For solid cylinders (r1=0.0): use a fraction of outer radius (e.g., 0.3 * r2) as default
+           - For hollow cylinders (r1 > 0): use r1 (inner radius) as core_radius
+         * **If NOT explicitly mentioned, use DEFAULT: core_radius = 0.1** (for solid cylinders, adjust based on r2 if available)
+     * **CRITICAL RULE**: When ANY composite material keywords are detected, you MUST set BOTH:
+       - core_radius (use r1 for hollow cylinders, or default 0.1-0.3*r2 for solid)
+       - core_diffusivity (extract from context: high/low/neutral, or use appropriate default)
+     * Examples:
+       - "circular tunnel with a heat conductor with high conductivity" → core_diffusivity=100.0 (high)
+       - "circular tunnel with an insulator in the middle" → core_diffusivity=0.01 (low)
+       - "circular tunnel with a conductor in the middle" → core_diffusivity=10.0 (moderate, inferred)
    - For wave: wave_speed (wave speed c)
    - For elasticity:
      * young_modulus: E (Pa or GPa) - Young's modulus, e.g., 210e9 Pa for steel
@@ -430,6 +502,13 @@ MANDATORY FIELDS - Always include these in your JSON response:
 - young_modulus: MUST be a float (default: 210e9 Pa if not mentioned, elasticity only)
 - poisson_ratio: MUST be a float (default: 0.3 if not mentioned, elasticity only)
 
+COMPOSITE MATERIAL FIELDS (for heat equation with cylindrical/spherical geometries):
+- core_radius: MUST be set if ANY of these keywords are detected: "heat conductor", "conductor", "high conductivity", "conductive core"
+  * Default: Use r1 for hollow cylinders, or 0.1-0.3*r2 for solid cylinders
+- core_diffusivity: MUST be set if ANY of the above keywords are detected
+  * Default: 100.0 (high value to create visible effect) if not explicitly mentioned
+  * If specific value mentioned, extract it (but ensure it's high, e.g., >= 10.0)
+
 If source is mentioned in the description, you MUST extract:
   - source_type = "constant"
   - source_value = the numerical value mentioned
@@ -546,6 +625,108 @@ Example 4 - Elasticity 3D with dimensions "1m*0.2m*0.2" (asterisk separators):
   "unit": "Pa",
   "notes": []
 }
+
+Example 5 - Heat 3D with cylindrical geometry (solid cylinder):
+Input: "Simulate 3D heat transfer in a circular tunnel with radius 0.5m and length 2m"
+{
+  "pde_type": "heat",
+  "dim": 3,
+  "domain_size": {"r1": 0.0, "r2": 0.5, "h": 2.0},
+  "geometry_type": "cylinder",
+  "coordinate_system": "cylindrical",
+  "geometry_params": {},
+  "bc_values": {"t_boundary": 0.0},
+  "initial_type": "constant",
+  "initial_value": 20.0,
+  "source_type": "none",
+  "source_value": 0.0,
+  "steady": false,
+  "field_name": "temperature",
+  "unit": "°C",
+  "notes": []
+}
+Note: For cylindrical geometries, use standard notation in domain_size:
+- r1 = inner radius (0.0 for solid cylinder)
+- r2 = outer radius
+- h = height/length along the axis
+
+Example 5b - Heat 3D with cylindrical geometry and composite material (high-conductivity core):
+Input: "Simulate 3D heat transfer with 100 degrees on the left and 20 degrees on the right. Please do it in a circular tunnel with a heat conductor with high conductivity in the middle"
+{
+  "pde_type": "heat",
+  "dim": 3,
+  "domain_size": {"r1": 0.0, "r2": 0.5, "h": 2.0},
+  "geometry_type": "cylinder",
+  "coordinate_system": "cylindrical",
+  "geometry_params": {},
+  "bc_values": {"T_left": 100.0, "T_right": 20.0},
+  "initial_type": "constant",
+  "initial_value": 20.0,
+  "source_type": "none",
+  "source_value": 0.0,
+  "steady": false,
+  "core_radius": 0.15,
+  "core_diffusivity": 100.0,
+  "field_name": "temperature",
+  "unit": "°C",
+  "notes": ["High-conductivity core detected: core_radius=0.15m (inferred: 30% of r2), core_diffusivity=100.0 (high value for visible effect)"]
+}
+Example 5c - Heat 3D with cylindrical geometry and composite material (low-conductivity core/insulator):
+Input: "Simulate 3D heat transfer in a circular tunnel with an insulator in the middle"
+{
+  "pde_type": "heat",
+  "dim": 3,
+  "domain_size": {"r1": 0.0, "r2": 0.5, "h": 2.0},
+  "geometry_type": "cylinder",
+  "coordinate_system": "cylindrical",
+  "geometry_params": {},
+  "bc_values": {"t_boundary": 20.0},
+  "initial_type": "constant",
+  "initial_value": 20.0,
+  "source_type": "none",
+  "source_value": 0.0,
+  "steady": false,
+  "core_radius": 0.15,
+  "core_diffusivity": 0.01,
+  "field_name": "temperature",
+  "unit": "°C",
+  "notes": ["Low-conductivity core (insulator) detected: core_radius=0.15m, core_diffusivity=0.01 (low value)"]
+}
+
+Note: For composite materials:
+- core_radius: Radius of the core region (can be high or low conductivity)
+  * For hollow cylinders (r1 > 0): core_radius MUST equal r1 (core fills the inner region from 0 to r1)
+  * For solid cylinders (r1 = 0): use a fraction of outer radius (e.g., 0.3 * r2) if not specified
+- core_diffusivity: Diffusivity of the core material (can be HIGHER or LOWER than base diffusivity)
+  * "high conductivity" → Default: 100.0 (high)
+  * "low conductivity"/"insulator" → Default: 0.01 (low)
+  * Neutral mention ("conductor", "core") → Default: 10.0 (moderate, higher than typical base 1.0)
+  * If specific value mentioned, extract it
+- CRITICAL: When "heat conductor", "insulator", "core", or similar phrases are mentioned, 
+  BOTH core_radius AND core_diffusivity must be extracted/set based on context
+
+Example 6 - Heat 3D with spherical geometry (solid sphere):
+Input: "Simulate heat transfer in a sphere with radius 1m"
+{
+  "pde_type": "heat",
+  "dim": 3,
+  "domain_size": {"r1": 0.0, "r2": 1.0},
+  "geometry_type": "sphere",
+  "coordinate_system": "spherical",
+  "geometry_params": {},
+  "bc_values": {"t_boundary": 20.0},
+  "initial_type": "constant",
+  "initial_value": 20.0,
+  "source_type": "none",
+  "source_value": 0.0,
+  "steady": false,
+  "field_name": "temperature",
+  "unit": "°C",
+  "notes": []
+}
+Note: For spherical geometries, use standard notation in domain_size:
+- r1 = inner radius (0.0 for solid sphere)
+- r2 = outer radius
 
 CRITICAL RULES FOR DOMAIN_SIZE EXTRACTION:
 
@@ -742,22 +923,175 @@ class PDEParserAgent:
         # Normalize keys to snake_case
         normalized_json = normalize_json_keys(parsed_json)
         
+        # Post-process: Detect composite material keywords in description if LLM missed them
+        description_lower = description.lower()
+        composite_keywords_high = [
+            "heat conductor", "conductor", "high conductivity", "high diffusivity",
+            "conductive core", "conductor with", "conductor in"
+        ]
+        composite_keywords_low = [
+            "insulator", "low conductivity", "low diffusivity", "insulating core"
+        ]
+        composite_keywords_neutral = [
+            "composite material", "core", "different material"
+        ]
+        
+        has_high_keyword = any(keyword in description_lower for keyword in composite_keywords_high)
+        has_low_keyword = any(keyword in description_lower for keyword in composite_keywords_low)
+        has_neutral_keyword = any(keyword in description_lower for keyword in composite_keywords_neutral)
+        has_composite_keyword = has_high_keyword or has_low_keyword or has_neutral_keyword
+        
+        # If composite keywords detected but core_diffusivity not set, add default values based on context
+        if has_composite_keyword and normalized_json.get("core_diffusivity") is None:
+            print(f"[DEBUG] Composite material keywords detected but core_diffusivity not extracted. Inferring from context.")
+            
+            # Infer core_diffusivity from keywords
+            if has_low_keyword:
+                # Low conductivity/insulator mentioned
+                normalized_json["core_diffusivity"] = 0.01
+                print(f"[DEBUG] Post-process: Low conductivity detected, setting core_diffusivity=0.01")
+            elif has_high_keyword:
+                # High conductivity mentioned
+                normalized_json["core_diffusivity"] = 100.0
+                print(f"[DEBUG] Post-process: High conductivity detected, setting core_diffusivity=100.0")
+            else:
+                # Neutral mention - use moderate value
+                normalized_json["core_diffusivity"] = 10.0
+                print(f"[DEBUG] Post-process: Neutral composite material, setting core_diffusivity=10.0")
+            
+            # Set default core_radius if not provided
+            if normalized_json.get("core_radius") is None:
+                # Infer from geometry
+                geometry_type = str(normalized_json.get("geometry_type", "")).lower()
+                domain_size = normalized_json.get("domain_size", {})
+                
+                if geometry_type in ["cylinder", "cylindrical", "column", "tube", "pipe", "tunnel"]:
+                    # For cylindrical geometries
+                    r1 = domain_size.get("r1", 0.0)
+                    r2 = domain_size.get("r2")
+                    
+                    if r1 > 0.0:
+                        # Hollow cylinder: use r1 as core_radius
+                        normalized_json["core_radius"] = float(r1)
+                        print(f"[DEBUG] Post-process: Hollow cylinder detected, setting core_radius=r1={r1}")
+                    elif r2 is not None:
+                        # Solid cylinder: use fraction of r2
+                        normalized_json["core_radius"] = float(r2) * 0.3
+                        print(f"[DEBUG] Post-process: Solid cylinder detected, setting core_radius=0.3*r2={normalized_json['core_radius']}")
+                    else:
+                        # Fallback
+                        normalized_json["core_radius"] = 0.1
+                        print(f"[DEBUG] Post-process: Using fallback core_radius=0.1")
+                else:
+                    # Default fallback
+                    normalized_json["core_radius"] = 0.1
+                    print(f"[DEBUG] Post-process: Using default core_radius=0.1")
+            
+            # Add note about post-processing
+            notes = normalized_json.get("notes", [])
+            if not isinstance(notes, list):
+                notes = []
+            core_diff_value = normalized_json.get("core_diffusivity", "unknown")
+            notes.append(f"Composite material detected via post-processing: core_diffusivity={core_diff_value}, core_radius set from geometry")
+            normalized_json["notes"] = notes
+        
+        # Post-process: Automatically infer coordinate_system from geometry_type if not set
+        if normalized_json.get("geometry_type") and not normalized_json.get("coordinate_system"):
+            geometry_type = str(normalized_json.get("geometry_type", "")).lower()
+            if geometry_type in ["cylinder", "cylindrical", "column", "tube", "pipe", "tunnel"]:
+                normalized_json["coordinate_system"] = "cylindrical"
+            elif geometry_type in ["sphere", "spherical", "ball"]:
+                normalized_json["coordinate_system"] = "spherical"
+            elif geometry_type in ["box", "cube", "rectangular"]:
+                normalized_json["coordinate_system"] = "cartesian"
+        
+        # If coordinate_system still not set, default to cartesian
+        if not normalized_json.get("coordinate_system"):
+            normalized_json["coordinate_system"] = "cartesian"
+        
         # Create PDEParameters object
         try:
-            return PDEParameters(**normalized_json)
+            params = PDEParameters(**normalized_json)
         except Exception as e:
             # If there are still issues, try to filter out unknown keys
             # Get valid field names from PDEParameters
             valid_fields = {f.name for f in PDEParameters.__dataclass_fields__.values()}
             filtered_json = {k: v for k, v in normalized_json.items() if k in valid_fields}
             try:
-                return PDEParameters(**filtered_json)
+                params = PDEParameters(**filtered_json)
             except Exception as e2:
                 raise ValueError(
                     f"Failed to create PDEParameters from parsed JSON. "
                     f"Original error: {e}, After filtering: {e2}. "
                     f"Normalized JSON keys: {list(normalized_json.keys())}"
                 )
+        
+        # Final post-processing: Ensure coordinate_system is set if geometry_type exists
+        if params.geometry_type and not params.coordinate_system:
+            geometry_lower = str(params.geometry_type).lower()
+            if geometry_lower in ["cylinder", "cylindrical", "column", "tube", "pipe", "tunnel"]:
+                params.coordinate_system = "cylindrical"
+            elif geometry_lower in ["sphere", "spherical", "ball"]:
+                params.coordinate_system = "spherical"
+            elif geometry_lower in ["box", "cube", "rectangular"]:
+                params.coordinate_system = "cartesian"
+        
+        if not params.coordinate_system:
+            params.coordinate_system = "cartesian"
+        
+        # Final validation: Double-check for composite materials if not already set
+        description_lower = description.lower()
+        composite_keywords_high = [
+            "heat conductor", "conductor", "high conductivity", "high diffusivity",
+            "conductive core", "conductor with", "conductor in"
+        ]
+        composite_keywords_low = [
+            "insulator", "low conductivity", "low diffusivity", "insulating core"
+        ]
+        composite_keywords_neutral = [
+            "composite material", "core", "different material"
+        ]
+        
+        has_high_keyword = any(keyword in description_lower for keyword in composite_keywords_high)
+        has_low_keyword = any(keyword in description_lower for keyword in composite_keywords_low)
+        has_neutral_keyword = any(keyword in description_lower for keyword in composite_keywords_neutral)
+        has_composite_keyword = has_high_keyword or has_low_keyword or has_neutral_keyword
+        
+        if has_composite_keyword and params.core_diffusivity is None:
+            print(f"[DEBUG] Final validation: Composite keywords found but core_diffusivity not set. Inferring from context.")
+            
+            # Infer from keywords
+            if has_low_keyword:
+                params.core_diffusivity = 0.01
+                print(f"[DEBUG] Final validation: Low conductivity detected, setting core_diffusivity=0.01")
+            elif has_high_keyword:
+                params.core_diffusivity = 100.0
+                print(f"[DEBUG] Final validation: High conductivity detected, setting core_diffusivity=100.0")
+            else:
+                params.core_diffusivity = 10.0
+                print(f"[DEBUG] Final validation: Neutral composite material, setting core_diffusivity=10.0")
+            
+            # Set core_radius if not set
+            if params.core_radius is None:
+                domain = params.domain_size or {}
+                if params.geometry_type and "cylinder" in str(params.geometry_type).lower():
+                    r1 = domain.get("r1", 0.0)
+                    r2 = domain.get("r2")
+                    if r1 > 0.0:
+                        params.core_radius = float(r1)
+                    elif r2 is not None:
+                        params.core_radius = float(r2) * 0.3
+                    else:
+                        params.core_radius = 0.1
+                else:
+                    params.core_radius = 0.1
+            
+            # Add note
+            if not hasattr(params, 'notes') or params.notes is None:
+                params.notes = []
+            params.notes.append(f"Composite material detected in final validation: core_diffusivity={params.core_diffusivity}, core_radius={params.core_radius}")
+        
+        return params
     
     def parse_sync(self, description: str) -> PDEParameters:
         """
